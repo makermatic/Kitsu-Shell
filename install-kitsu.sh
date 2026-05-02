@@ -145,10 +145,16 @@ if ! id -u zou >/dev/null 2>&1; then
     useradd --home /opt/zou --shell /bin/bash zou
 fi
 
-mkdir -p /opt/zou /opt/zou/backups /opt/zou/previews /opt/zou/tmp /opt/zou/logs
+mkdir -p /opt/zou /opt/zou/backups /opt/zou/previews /opt/zou/tmp /opt/zou/logs /opt/zou/plugins
 chown -R zou:zou /opt/zou
 chown -R zou:www-data /opt/zou/previews /opt/zou/tmp
-chown zou:zou /opt/zou/logs
+chown zou:zou /opt/zou/logs /opt/zou/plugins
+
+# Zou looks for a plugins folder relative to HOME on startup. If we sudo to zou
+# without -H, HOME stays as /root and Zou tries to read /root/plugins, which fails
+# with permission denied. Create it as a readable empty dir to be safe.
+mkdir -p /root/plugins
+chmod 755 /root/plugins
 
 # ---------- 3. install zou ----------
 if [[ ! -x /opt/zou/zouenv/bin/zou ]]; then
@@ -162,6 +168,17 @@ else
 fi
 
 # ---------- 4. postgres (docker) ----------
+# IMPORTANT: If /etc/zou/zou.env already exists, reuse its DB_PASSWORD instead
+# of the freshly-generated one. Otherwise on a re-run we'd generate a new password
+# but the existing Postgres container still has the OLD password baked in.
+if [[ -f /etc/zou/zou.env ]] && grep -q '^DB_PASSWORD=' /etc/zou/zou.env; then
+    EXISTING_DB_PASS=$(grep '^DB_PASSWORD=' /etc/zou/zou.env | cut -d= -f2-)
+    if [[ -n "$EXISTING_DB_PASS" ]]; then
+        log "Reusing existing DB password from /etc/zou/zou.env"
+        DB_PASS="$EXISTING_DB_PASS"
+    fi
+fi
+
 log "Setting up Postgres container..."
 if docker ps -a --format '{{.Names}}' | grep -q '^postgres$'; then
     log "Postgres container already exists; ensuring it's running..."
@@ -183,10 +200,26 @@ for i in {1..30}; do
     [[ $i -eq 30 ]] && die "Postgres did not become ready in 30s"
 done
 
-# Make sure the password matches even if container already existed
-docker exec -e PGPASSWORD="$DB_PASS" postgres \
-    psql -U postgres -d postgres \
-    -c "ALTER USER postgres WITH PASSWORD '$DB_PASS';" >/dev/null
+# Verify our password actually works against the container.
+# If it doesn't, we have a stale container from a previous failed run — recreate it.
+if ! docker exec -e PGPASSWORD="$DB_PASS" postgres \
+        psql -U postgres -d postgres -c "SELECT 1;" >/dev/null 2>&1; then
+    warn "Postgres container password doesn't match expected value — recreating container."
+    warn "(This wipes any existing zoudb data — only an issue if you had a working install.)"
+    docker stop postgres >/dev/null
+    docker rm postgres >/dev/null
+    docker run --name postgres \
+        --restart unless-stopped \
+        -p 127.0.0.1:5432:5432 \
+        -e POSTGRES_PASSWORD="$DB_PASS" \
+        -d postgres >/dev/null
+    log "Waiting for fresh Postgres to be ready..."
+    for i in {1..30}; do
+        if docker exec postgres pg_isready -U postgres >/dev/null 2>&1; then break; fi
+        sleep 1
+        [[ $i -eq 30 ]] && die "Postgres did not become ready in 30s"
+    done
+fi
 
 # Create zoudb if missing
 if ! docker exec -e PGPASSWORD="$DB_PASS" postgres \
@@ -262,10 +295,10 @@ chown root:zou /etc/zou/zou.env
 
 # ---------- 8. init db + seed data ----------
 log "Initializing Zou database tables..."
-sudo -u zou bash -c "set -a; . /etc/zou/zou.env; set +a; /opt/zou/zouenv/bin/zou init-db"
+sudo -u zou -H bash -c "set -a; . /etc/zou/zou.env; set +a; /opt/zou/zouenv/bin/zou init-db"
 
 log "Seeding Zou with default data..."
-sudo -u zou bash -c "set -a; . /etc/zou/zou.env; set +a; /opt/zou/zouenv/bin/zou init-data"
+sudo -u zou -H bash -c "set -a; . /etc/zou/zou.env; set +a; /opt/zou/zouenv/bin/zou init-data"
 
 # ---------- 9. gunicorn configs ----------
 log "Writing gunicorn configs..."
@@ -385,14 +418,14 @@ systemctl restart nginx
 
 # ---------- 14. create admin ----------
 log "Creating admin user $ADMIN_EMAIL..."
-sudo -u zou bash -c "set -a; . /etc/zou/zou.env; set +a; \
+sudo -u zou -H bash -c "set -a; . /etc/zou/zou.env; set +a; \
     /opt/zou/zouenv/bin/zou create-admin --password '$ADMIN_PASS' '$ADMIN_EMAIL'" \
     || warn "Admin creation reported an error (this is normal if the admin already exists)."
 
 # ---------- 15. (optional) build search index ----------
 if [[ "$WITH_MEILI" -eq 1 ]]; then
     log "Building Meilisearch index..."
-    sudo -u zou bash -c "set -a; . /etc/zou/zou.env; set +a; \
+    sudo -u zou -H bash -c "set -a; . /etc/zou/zou.env; set +a; \
         /opt/zou/zouenv/bin/zou reset-search-index" || warn "Index build failed; you can re-run later."
 fi
 
