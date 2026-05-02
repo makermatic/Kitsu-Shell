@@ -150,11 +150,15 @@ chown -R zou:zou /opt/zou
 chown -R zou:www-data /opt/zou/previews /opt/zou/tmp
 chown zou:zou /opt/zou/logs /opt/zou/plugins
 
-# Zou looks for a plugins folder relative to HOME on startup. If we sudo to zou
-# without -H, HOME stays as /root and Zou tries to read /root/plugins, which fails
-# with permission denied. Create it as a readable empty dir to be safe.
+# Zou checks for a plugins folder relative to the invoking user's home directory.
+# Even with `sudo -u zou -H`, Zou's plugin loader resolves to /root/plugins on
+# some configurations. Two-part fix:
+#   1. Create /root/plugins so the path exists
+#   2. chmod o+x /root so non-root users can traverse INTO /root to reach it
+#      (this does NOT make /root listable — only makes paths through it resolvable)
 mkdir -p /root/plugins
 chmod 755 /root/plugins
+chmod o+x /root
 
 # ---------- 3. install zou ----------
 if [[ ! -x /opt/zou/zouenv/bin/zou ]]; then
