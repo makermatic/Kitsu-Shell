@@ -103,10 +103,18 @@ log "Installing system packages (this can take a while)..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq \
-    postgresql postgresql-client postgresql-server-dev-all \
+    postgresql-client postgresql-server-dev-all \
     build-essential redis-server nginx xmlsec1 ffmpeg \
     software-properties-common curl ca-certificates gnupg lsb-release \
     docker.io openssl
+
+# If a previous install left the system postgres daemon running, stop it —
+# it would conflict with the Postgres docker container on port 5432.
+if systemctl is-active --quiet postgresql 2>/dev/null; then
+    log "Stopping system postgresql service to free port 5432 for Docker..."
+    systemctl stop postgresql
+    systemctl disable postgresql >/dev/null 2>&1 || true
+fi
 
 # Python 3.12: on Ubuntu 24.04 it's the system default, on 22.04 we need deadsnakes.
 # Either way, we explicitly install the venv and dev packages — `python3.12` being on
