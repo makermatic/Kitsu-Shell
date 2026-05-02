@@ -108,12 +108,24 @@ apt-get install -y -qq \
     software-properties-common curl ca-certificates gnupg lsb-release \
     docker.io openssl
 
-# Python 3.12 from deadsnakes
-if ! command -v python3.12 >/dev/null 2>&1; then
-    log "Adding deadsnakes PPA for Python 3.12..."
-    add-apt-repository -y ppa:deadsnakes/ppa
-    apt-get update -qq
-    apt-get install -y -qq python3.12 python3.12-venv python3.12-dev
+# Python 3.12: on Ubuntu 24.04 it's the system default, on 22.04 we need deadsnakes.
+# Either way, we explicitly install the venv and dev packages — `python3.12` being on
+# PATH doesn't guarantee `python3.12-venv` is present (this is what trips up 24.04).
+log "Ensuring Python 3.12 + venv + dev headers are installed..."
+UBUNTU_VERSION_ID=$(. /etc/os-release && echo "$VERSION_ID")
+if [[ "$UBUNTU_VERSION_ID" == "22.04" ]] || [[ "$UBUNTU_VERSION_ID" < "24.04" ]]; then
+    # Older Ubuntu — need deadsnakes for Python 3.12
+    if ! apt-cache policy python3.12 2>/dev/null | grep -q 'deadsnakes'; then
+        log "Adding deadsnakes PPA..."
+        add-apt-repository -y ppa:deadsnakes/ppa
+        apt-get update -qq
+    fi
+fi
+apt-get install -y -qq python3.12 python3.12-venv python3.12-dev
+
+# Sanity check — the actual failure mode we hit on 24.04 was venv missing despite python being present
+if ! python3.12 -c "import venv" 2>/dev/null; then
+    die "python3.12-venv is not functional. Try: sudo apt-get install --reinstall python3.12-venv"
 fi
 
 systemctl enable --now docker
