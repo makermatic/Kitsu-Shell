@@ -15,7 +15,7 @@ You'll need:
 
 1. **A fresh server running Ubuntu 22.04 or newer.** Any cheap VPS works — Vultr, DigitalOcean, Hetzner, Linode all have $5-6/month options that are plenty for testing. Don't run this on a server that's already doing something else; the script assumes a clean box.
 2. **SSH access to that server** (root or a user with sudo).
-3. **Inbound TCP port 80 open** in the VPS provider's firewall — this is the one thing the script *can't* handle for you, because it lives in the provider's dashboard, not on the server. Check the "Firewall" or "Networking" section of your VPS control panel and make sure port 80 is allowed from anywhere. If you skip this step, the install will succeed but your browser won't be able to reach Kitsu.
+3. **Inbound TCP port 80 open** in the VPS provider's firewall, if your provider has one. The script opens port 80 in the server's own firewall (UFW) for you, but a cloud firewall lives in the provider's dashboard, not on the server, so the script can't touch it. Check the "Firewall" or "Networking" section of your VPS control panel and make sure port 80 is allowed from anywhere. If you skip this step, the install will succeed but your browser won't be able to reach Kitsu.
 4. **A terminal.** PowerShell on Windows works fine (`ssh` and `scp` are built in). Terminal on Mac/Linux. WSL also fine.
 
 ---
@@ -64,14 +64,16 @@ sudo bash install-kitsu.sh
 It'll ask three questions:
 
 1. **Server domain name or IP** — if you have a domain pointed at this server, use it. Otherwise just hit enter to use the server's IP.
-2. **Admin email** — the login for the first Kitsu user. Doesn't have to be a real email; Kitsu won't send anything to it.
-3. **Admin password** — you'll type it silently (no echo). This is what you'll use to log into Kitsu.
+2. **Admin email** — the login for the first Kitsu user. Doesn't have to be a real email; Kitsu won't send anything to it. Hit enter to use the default, `adminemail@yourstudio.com`.
+3. **Admin password** — you'll type it silently (no echo). This is what you'll use to log into Kitsu. Hit enter to use the default, `1SecretPass`.
+
+> **If you use the defaults, change them right after your first login.** They're published in this README, so anyone who finds your server could try them.
 
 Then walk away for ~10 minutes. Watch the colored `[kitsu-install]` log lines scroll past. When it's done you'll see a big success banner with your login URL.
 
 ### 4. Log in
 
-Open a browser on your local machine (not the server) and go to `http://your-server-ip/`. Log in with the email and password you set.
+Open a browser on your local machine (not the server) and go to `http://your-server-ip/`. Log in with the email and password you set (or the defaults above, if you hit enter).
 
 ---
 
@@ -124,7 +126,12 @@ sudo nginx -t && sudo systemctl reload nginx
 `curl` didn't actually save the file. Re-check you used `-O` (capital letter O). Run `ls install-kitsu.sh` to confirm before `sudo bash`.
 
 **Install finishes but browser says "can't reach this site" / connection timed out.**
-Port 80 is blocked. Check your VPS provider's firewall panel and allow inbound TCP port 80. This is the most common gotcha — the script opens the server-side firewall (UFW) but can't touch the cloud provider's separate firewall layer.
+Port 80 is blocked somewhere. A timeout (rather than "connection refused") means a firewall is silently dropping the traffic. Check both layers:
+
+1. **The server's firewall (UFW).** Run `sudo ufw status`. If it says `active` and there's no `80/tcp ALLOW` line, run `sudo ufw allow 80/tcp`. The script does this automatically, but installs made with older versions of the script didn't.
+2. **Your VPS provider's firewall.** Check the provider's firewall panel and allow inbound TCP port 80. The script can't touch this layer.
+
+To tell which layer is the problem, run `curl -sI http://localhost/ | head -1` on the server. If that prints `200 OK`, Kitsu itself is fine and it's one of the firewalls.
 
 **Install fails partway through.**
 Just re-run `sudo bash install-kitsu.sh`. The script is idempotent — it skips steps that already completed and picks up from where it stopped. That said, if the same step keeps failing on retry, the fastest fix is often destroying the VPS instance and starting fresh on a clean box (costs pennies in prorated billing).

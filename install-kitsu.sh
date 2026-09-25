@@ -33,11 +33,19 @@ prompt() {
     # prompt <varname> <message> [default] [silent]
     local __varname=$1 __msg=$2 __default=${3:-} __silent=${4:-}
     if [[ "${NO_PROMPT:-0}" == "1" ]]; then
-        die "Missing required value for $__varname (run without --no-prompt or pass the matching flag)"
+        [[ -z "$__default" ]] && die "Missing required value for $__varname (run without --no-prompt or pass the matching flag)"
+        printf -v "$__varname" '%s' "$__default"
+        return
     fi
     local __input=""
     if [[ "$__silent" == "silent" ]]; then
-        read -r -s -p "$__msg: " __input; echo
+        # Never echo a secret default — just say one exists.
+        if [[ -n "$__default" ]]; then
+            read -r -s -p "$__msg [Enter for default]: " __input; echo
+            __input=${__input:-$__default}
+        else
+            read -r -s -p "$__msg: " __input; echo
+        fi
     else
         if [[ -n "$__default" ]]; then
             read -r -p "$__msg [$__default]: " __input
@@ -56,6 +64,11 @@ DOMAIN=""
 ADMIN_EMAIL=""
 ADMIN_PASS=""
 DB_PASS=""
+
+# Used when the admin email/password prompts are left blank. Change these after
+# first login — they're public in this repo.
+DEFAULT_ADMIN_EMAIL="adminemail@yourstudio.com"
+DEFAULT_ADMIN_PASS="1SecretPass"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -86,8 +99,8 @@ fi
 
 # ---------- collect inputs ----------
 [[ -z "$DOMAIN"      ]] && prompt DOMAIN      "Server domain name or IP (used in nginx server_name)" "$(hostname -I | awk '{print $1}')"
-[[ -z "$ADMIN_EMAIL" ]] && prompt ADMIN_EMAIL "Admin email (login for the first Kitsu user)"
-[[ -z "$ADMIN_PASS"  ]] && prompt ADMIN_PASS  "Admin password" "" silent
+[[ -z "$ADMIN_EMAIL" ]] && prompt ADMIN_EMAIL "Admin email (login for the first Kitsu user)" "$DEFAULT_ADMIN_EMAIL"
+[[ -z "$ADMIN_PASS"  ]] && prompt ADMIN_PASS  "Admin password" "$DEFAULT_ADMIN_PASS" silent
 [[ -z "$DB_PASS"     ]] && DB_PASS=$(openssl rand -hex 16)
 
 SECRET_KEY=$(openssl rand -hex 24)
@@ -413,6 +426,18 @@ ln -sf /etc/nginx/sites-available/zou /etc/nginx/sites-enabled/zou
 
 nginx -t
 
+# ---------- 12b. host firewall (ufw) ----------
+# Many VPS images (e.g. Vultr) ship with UFW enabled and only SSH allowed, which
+# silently drops port 80 and shows up in the browser as ERR_CONNECTION_TIMED_OUT.
+# Only add rules — never enable UFW if the user has it switched off.
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
+    log "UFW is active; allowing inbound 22/tcp and 80/tcp..."
+    ufw allow 22/tcp >/dev/null
+    ufw allow 80/tcp >/dev/null
+else
+    log "UFW not active; skipping host firewall rules."
+fi
+
 # ---------- 13. start everything ----------
 log "Reloading systemd and starting services..."
 systemctl daemon-reload
@@ -434,6 +459,12 @@ if [[ "$WITH_MEILI" -eq 1 ]]; then
 fi
 
 # ---------- done ----------
+if [[ "$ADMIN_PASS" == "$DEFAULT_ADMIN_PASS" ]]; then
+    PASS_NOTE="$DEFAULT_ADMIN_PASS  (default — change it after logging in!)"
+else
+    PASS_NOTE="(the one you entered)"
+fi
+
 cat <<EOF
 
 ============================================================
@@ -442,7 +473,7 @@ cat <<EOF
 
   Open in your browser:  http://$DOMAIN/
   Login email:           $ADMIN_EMAIL
-  Login password:        (the one you entered)
+  Login password:        $PASS_NOTE
 
   Useful files:
     /etc/zou/zou.env              Environment variables (DB pw, secret key)
