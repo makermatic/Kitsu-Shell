@@ -387,16 +387,40 @@ else
 fi
 
 # ---------- 12. nginx ----------
+# Serve Kitsu on both HTTP (80) and HTTPS (443), with no redirect between them.
+# Some networks drop PUT/DELETE requests over plain HTTP (Kitsu uses them for
+# assigning, editing and deleting), and HTTPS gets around that. Without a real
+# certificate we use a self-signed one: browsers warn once, then it works.
+# Running certbot later swaps in a real certificate.
+SSL_DIR=/etc/ssl/kitsu
+if [[ ! -f "$SSL_DIR/kitsu.crt" ]]; then
+    log "Generating self-signed TLS certificate for $DOMAIN..."
+    mkdir -p "$SSL_DIR"
+    if [[ "$DOMAIN" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then SAN="IP:$DOMAIN"; else SAN="DNS:$DOMAIN"; fi
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650 \
+        -keyout "$SSL_DIR/kitsu.key" -out "$SSL_DIR/kitsu.crt" \
+        -subj "/CN=$DOMAIN" -addext "subjectAltName=$SAN" 2>/dev/null
+    chmod 600 "$SSL_DIR/kitsu.key"
+else
+    log "TLS certificate already present, keeping it."
+fi
+
 log "Writing nginx site config..."
+# proxy_pass uses 127.0.0.1, not localhost: on Ubuntu 24.04 localhost resolves to
+# ::1 first, where gunicorn isn't listening, which fills error.log with refusals.
 cat > /etc/nginx/sites-available/zou <<EOF
 server {
     listen 80;
+    listen 443 ssl;
     server_name $DOMAIN;
+
+    ssl_certificate     $SSL_DIR/kitsu.crt;
+    ssl_certificate_key $SSL_DIR/kitsu.key;
 
     location /api {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header Host \$host;
-        proxy_pass http://localhost:5000/;
+        proxy_pass http://127.0.0.1:5000/;
         client_max_body_size 500M;
         proxy_connect_timeout 600s;
         proxy_send_timeout 600s;
@@ -410,7 +434,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "Upgrade";
-        proxy_pass http://localhost:5001;
+        proxy_pass http://127.0.0.1:5001;
     }
 
     location / {
@@ -431,9 +455,10 @@ nginx -t
 # silently drops port 80 and shows up in the browser as ERR_CONNECTION_TIMED_OUT.
 # Only add rules — never enable UFW if the user has it switched off.
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
-    log "UFW is active; allowing inbound 22/tcp and 80/tcp..."
+    log "UFW is active; allowing inbound 22/tcp, 80/tcp and 443/tcp..."
     ufw allow 22/tcp >/dev/null
     ufw allow 80/tcp >/dev/null
+    ufw allow 443/tcp >/dev/null
 else
     log "UFW not active; skipping host firewall rules."
 fi
@@ -472,6 +497,7 @@ cat <<EOF
 ============================================================
 
   Open in your browser:  http://$DOMAIN/
+                     or  https://$DOMAIN/
   Login email:           $ADMIN_EMAIL
   Login password:        $PASS_NOTE
 
@@ -486,11 +512,15 @@ cat <<EOF
     sudo systemctl status zou zou-events
     sudo journalctl -u zou -f
 
-  HTTPS reminder:
-    This script configures plain HTTP on port 80 to match the
-    official docs. For any real deployment, run certbot:
+  HTTP and HTTPS both work. HTTPS uses a self-signed certificate,
+  so your browser will warn once ("Advanced" -> "Proceed"). If
+  assigning or editing hangs over http://, use https:// instead;
+  some networks block those requests over plain HTTP.
+
+  With a real domain pointed at this server, swap in a trusted
+  certificate (no browser warning):
       sudo apt-get install certbot python3-certbot-nginx
-      sudo certbot --nginx -d $DOMAIN
+      sudo certbot --nginx -d your-domain.com
 
 ============================================================
 EOF

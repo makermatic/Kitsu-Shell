@@ -15,7 +15,7 @@ You'll need:
 
 1. **A fresh server running Ubuntu 22.04 or newer.** Any cheap VPS works — Vultr, DigitalOcean, Hetzner, Linode all have $5-6/month options that are plenty for testing. Don't run this on a server that's already doing something else; the script assumes a clean box.
 2. **SSH access to that server** (root or a user with sudo).
-3. **Inbound TCP port 80 open** in the VPS provider's firewall, if your provider has one. The script opens port 80 in the server's own firewall (UFW) for you, but a cloud firewall lives in the provider's dashboard, not on the server, so the script can't touch it. Check the "Firewall" or "Networking" section of your VPS control panel and make sure port 80 is allowed from anywhere. If you skip this step, the install will succeed but your browser won't be able to reach Kitsu.
+3. **Inbound TCP ports 80 and 443 open** in the VPS provider's firewall, if your provider has one. The script opens them in the server's own firewall (UFW) for you, but a cloud firewall lives in the provider's dashboard, not on the server, so the script can't touch it. Check the "Firewall" or "Networking" section of your VPS control panel and make sure ports 80 and 443 are allowed from anywhere. If you skip this step, the install will succeed but your browser won't be able to reach Kitsu.
 4. **A terminal.** PowerShell on Windows works fine (`ssh` and `scp` are built in). Terminal on Mac/Linux. WSL also fine.
 
 ---
@@ -73,7 +73,7 @@ Then walk away for ~10 minutes. Watch the colored `[kitsu-install]` log lines sc
 
 ### 4. Log in
 
-Open a browser on your local machine (not the server) and go to `http://your-server-ip/`. Log in with the email and password you set (or the defaults above, if you hit enter).
+Open a browser on your local machine (not the server) and go to `http://your-server-ip/` or `https://your-server-ip/` (both work; the HTTPS one shows a one-time certificate warning, see [Troubleshooting](#troubleshooting)). Log in with the email and password you set (or the defaults above, if you hit enter).
 
 ---
 
@@ -128,8 +128,8 @@ sudo nginx -t && sudo systemctl reload nginx
 **Install finishes but browser says "can't reach this site" / connection timed out.**
 Port 80 is blocked somewhere. A timeout (rather than "connection refused") means a firewall is silently dropping the traffic. Check both layers:
 
-1. **The server's firewall (UFW).** Run `sudo ufw status`. If it says `active` and there's no `80/tcp ALLOW` line, run `sudo ufw allow 80/tcp`. The script does this automatically, but installs made with older versions of the script didn't.
-2. **Your VPS provider's firewall.** Check the provider's firewall panel and allow inbound TCP port 80. The script can't touch this layer.
+1. **The server's firewall (UFW).** Run `sudo ufw status`. If it says `active` and there are no `80/tcp` and `443/tcp` ALLOW lines, run `sudo ufw allow 80/tcp && sudo ufw allow 443/tcp`. The script does this automatically, but installs made with older versions of the script didn't.
+2. **Your VPS provider's firewall.** Check the provider's firewall panel and allow inbound TCP ports 80 and 443. The script can't touch this layer.
 
 To tell which layer is the problem, run `curl -sI http://localhost/ | head -1` on the server. If that prints `200 OK`, Kitsu itself is fine and it's one of the firewalls.
 
@@ -144,8 +144,11 @@ sudo journalctl -u zou -n 50                   # last 50 log lines
 sudo journalctl -u zou -f                      # live tail (Ctrl+C to exit)
 ```
 
-**Adding HTTPS.**
-The script only sets up plain HTTP on port 80 (matching the official docs). For any real deployment with a domain name:
+**Assigning, editing or deleting hangs, then errors ("Request has been terminated" or "Response timeout of 60000ms exceeded").**
+Your network is blocking those requests. Kitsu sends them as `PUT`/`DELETE`, and some school, office and shared networks drop those over plain HTTP before they reach the server. Browsing and commenting still work because they use `GET`/`POST`. Switch to the `https://` address; the network can't see the request type through HTTPS, so it can't block it. You'll get a one-time certificate warning (see below).
+
+**Browser warns "Your connection is not private" on https://.**
+Expected. Without a domain name, the script uses a self-signed certificate, which browsers don't recognize. Click "Advanced", then "Proceed". The connection is still encrypted. To get rid of the warning, point a domain at the server and swap in a free trusted certificate:
 
 ```bash
 sudo apt-get install certbot python3-certbot-nginx
@@ -164,9 +167,9 @@ Only works with a real domain pointed at the server, not a raw IP.
 4. Runs Postgres in a Docker container with an auto-generated random password.
 5. Writes `/etc/zou/zou.env` with the DB password and a random `SECRET_KEY` (mode 640, root:zou — not world-readable).
 6. Initializes the Zou database schema and seeds default data.
-7. Writes gunicorn configs, systemd unit files, and the nginx site config.
+7. Writes gunicorn configs, systemd unit files, and the nginx site config. nginx serves Kitsu on both HTTP (port 80) and HTTPS (port 443), using a self-signed certificate at `/etc/ssl/kitsu/`.
 8. Downloads the latest Kitsu front-end release from GitHub.
-9. Opens ports 22 and 80 in UFW (only adds rules — doesn't enable UFW if it's inactive).
+9. Opens ports 22, 80 and 443 in UFW (only adds rules — doesn't enable UFW if it's inactive).
 10. Starts everything and creates the admin user.
 
 The full script source is [right here in the repo](install-kitsu.sh) — read through it before running if you want to know exactly what's happening as root on your server.
@@ -183,6 +186,7 @@ The full script source is [right here in the repo](install-kitsu.sh) — read th
 | `/etc/systemd/system/zou.service` | Systemd unit for the API |
 | `/etc/systemd/system/zou-events.service` | Systemd unit for the event stream |
 | `/etc/nginx/sites-available/zou` | Nginx site config |
+| `/etc/ssl/kitsu/` | Self-signed HTTPS certificate and key |
 | `/opt/zou/zouenv/` | Python virtualenv containing Zou |
 | `/opt/zou/previews/` | User-uploaded preview media |
 | `/opt/zou/logs/` | Application logs |
